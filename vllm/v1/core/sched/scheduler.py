@@ -27,7 +27,9 @@ from vllm.logger import init_logger
 from vllm.multimodal import MULTIMODAL_REGISTRY, MultiModalRegistry
 from vllm.v1.core.encoder_cache_manager import (
     EncoderCacheManager,
+    OnlineDualEncoderCacheManager,
     compute_encoder_budget,
+    create_encoder_cache_manager,
 )
 from vllm.v1.core.kv_cache_manager import KVCacheBlocks, KVCacheManager
 from vllm.v1.core.kv_cache_metrics import KVCacheMetricsCollector
@@ -176,7 +178,9 @@ class Scheduler(SchedulerInterface):
         # NOTE: For the models without encoder (e.g., text-only models),
         # the encoder cache will not be initialized because cache size is 0
         # for these models.
-        self.encoder_cache_manager = EncoderCacheManager(cache_size=encoder_cache_size)
+        self.encoder_cache_manager = create_encoder_cache_manager(
+            cache_size=encoder_cache_size
+        )
 
         speculative_config = vllm_config.speculative_config
         self.use_eagle = False
