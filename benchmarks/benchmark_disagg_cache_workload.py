@@ -38,6 +38,7 @@ import json
 import os
 import sys
 import time
+from collections import Counter
 from pathlib import Path
 
 import numpy as np
@@ -64,6 +65,10 @@ PROMPTS = [
     "What mood or atmosphere does this image convey?",
     "List the main visual elements in this image.",
 ]
+
+# 默认最大重试次数
+MAX_RETRIES = 3
+RETRY_BASE_DELAY = 2.0  # 秒
 
 
 # ========================== 图片生成 ==========================
@@ -97,7 +102,6 @@ def prepare_images(image_dir: str, num_images: int, seed: int = 42):
         img.save(path, "JPEG", quality=85)
 
     print(f"已创建 {num_images} 张图片 -> {image_dir}")
-    from collections import Counter
     size_counts = Counter(sizes[i % len(sizes)] for i in range(num_images))
     for (w, h), count in sorted(size_counts.items()):
         print(f"  {w}x{h}: {count} 张")
@@ -137,8 +141,9 @@ async def send_one_request(
     image_path: str,
     prompt: str,
     request_idx: int,
+    max_retries: int = MAX_RETRIES,
 ) -> dict:
-    """发送一个带 file:// 图片的 chat completion 请求。"""
+    """发送一个带 file:// 图片的 chat completion 请求，带重试。"""
     payload = {
         "model": model,
         "messages": [
@@ -157,33 +162,79 @@ async def send_one_request(
         "stream": False,
     }
 
-    start = time.perf_counter()
-    try:
-        async with session.post(
-            url, json=payload, timeout=aiohttp.ClientTimeout(total=180)
-        ) as resp:
-            elapsed = time.perf_counter() - start
-            body = await resp.json()
+    last_error = None
+    for attempt in range(max_retries + 1):
+        start = time.perf_counter()
+        try:
+            async with session.post(
+                url, json=payload, timeout=aiohttp.ClientTimeout(total=300)
+            ) as resp:
+                elapsed = time.perf_counter() - start
+                body = await resp.json()
 
-            output_tokens = 0
-            if resp.status == 200 and "usage" in body:
-                output_tokens = body["usage"].get("completion_tokens", 0)
+                if resp.status == 200:
+                    output_tokens = 0
+                    if "usage" in body:
+                        output_tokens = body["usage"].get(
+                            "completion_tokens", 0
+                        )
+                    return {
+                        "idx": request_idx,
+                        "success": True,
+                        "ttft": elapsed,
+                        "status": resp.status,
+                        "output_tokens": output_tokens,
+                        "attempts": attempt + 1,
+                    }
+
+                # 服务端错误 (5xx)，可重试
+                last_error = (
+                    f"HTTP {resp.status}: "
+                    f"{body.get('detail', body.get('error', ''))}"
+                )
+                if resp.status >= 500 and attempt < max_retries:
+                    delay = RETRY_BASE_DELAY * (2 ** attempt)
+                    await asyncio.sleep(delay)
+                    continue
+
+                # 客户端错误 (4xx) 或重试耗尽
+                return {
+                    "idx": request_idx,
+                    "success": False,
+                    "ttft": elapsed,
+                    "status": resp.status,
+                    "error": last_error,
+                    "attempts": attempt + 1,
+                }
+
+        except (
+            aiohttp.ClientError,
+            asyncio.TimeoutError,
+            ConnectionError,
+        ) as e:
+            elapsed = time.perf_counter() - start
+            last_error = f"{type(e).__name__}: {e}"
+            if attempt < max_retries:
+                delay = RETRY_BASE_DELAY * (2 ** attempt)
+                await asyncio.sleep(delay)
+                continue
 
             return {
                 "idx": request_idx,
-                "success": resp.status == 200,
+                "success": False,
                 "ttft": elapsed,
-                "status": resp.status,
-                "output_tokens": output_tokens,
+                "error": last_error,
+                "attempts": attempt + 1,
             }
-    except Exception as e:
-        elapsed = time.perf_counter() - start
-        return {
-            "idx": request_idx,
-            "success": False,
-            "ttft": elapsed,
-            "error": str(e),
-        }
+
+    # 不应到这里
+    return {
+        "idx": request_idx,
+        "success": False,
+        "ttft": 0,
+        "error": last_error or "unknown",
+        "attempts": max_retries + 1,
+    }
 
 
 async def run_workload(
@@ -191,9 +242,14 @@ async def run_workload(
     proxy_port: int,
     image_dir: str,
     image_indices: list[int],
-    concurrency: int = 8,
+    concurrency: int = 4,
+    request_rate: float = 0.0,
 ) -> list[dict]:
-    """按序列发请求（限制并发数），收集结果。"""
+    """按序列发请求，用 Semaphore 控制并发，可选请求间隔。
+
+    Args:
+        request_rate: 每秒发送的请求数。0 表示尽快发送（仅受并发限制）。
+    """
     url = f"http://localhost:{proxy_port}/v1/chat/completions"
 
     image_files = sorted(glob.glob(os.path.join(image_dir, "img_*.jpg")))
@@ -201,34 +257,60 @@ async def run_workload(
         print(f"在 {image_dir} 中找不到图片")
         sys.exit(1)
 
+    print(f"  找到 {len(image_files)} 张图片")
+    print(f"  并发: {concurrency}, 请求速率: "
+          f"{'unlimited' if request_rate <= 0 else f'{request_rate:.1f} req/s'}")
+
     results: list[dict] = []
     sem = asyncio.Semaphore(concurrency)
+    interval = 1.0 / request_rate if request_rate > 0 else 0.0
+    total = len(image_indices)
+    done_count = 0
+    lock = asyncio.Lock()
+    start_wall = time.perf_counter()
 
-    async def bounded(session, idx, img_idx):
+    async def do_request(session, idx, img_idx):
+        nonlocal done_count
         async with sem:
             prompt = PROMPTS[idx % len(PROMPTS)]
             img_path = image_files[img_idx]
-            return await send_one_request(
+            result = await send_one_request(
                 session, url, model, img_path, prompt, idx
             )
+            async with lock:
+                done_count += 1
+                if done_count % max(1, total // 20) == 0 or done_count == total:
+                    elapsed_wall = time.perf_counter() - start_wall
+                    print(
+                        f"  进度: {done_count}/{total} "
+                        f"({elapsed_wall:.1f}s elapsed)"
+                    )
+            return result
 
-    connector = aiohttp.TCPConnector(limit=concurrency * 2)
+    connector = aiohttp.TCPConnector(limit=concurrency + 2)
     async with aiohttp.ClientSession(connector=connector) as session:
-        tasks = [
-            bounded(session, i, img_idx)
-            for i, img_idx in enumerate(image_indices)
-        ]
+        # 先发一个 warmup 请求确认服务可用
+        print("  发送 warmup 请求...")
+        warmup = await send_one_request(
+            session, url, model, image_files[0], PROMPTS[0], -1
+        )
+        if not warmup.get("success"):
+            print(f"  [WARN] warmup 失败: {warmup.get('error', warmup)}")
+            print("  服务可能未就绪，继续尝试...")
+        else:
+            print(f"  warmup 成功 (TTFT={warmup['ttft']:.2f}s)")
 
-        total = len(tasks)
-        done = 0
-        for coro in asyncio.as_completed(tasks):
-            result = await coro
-            results.append(result)
-            done += 1
-            if done % max(1, total // 10) == 0 or done == total:
-                print(f"  进度: {done}/{total}")
+        # 按顺序提交任务，可选间隔
+        tasks = []
+        for i, img_idx in enumerate(image_indices):
+            task = asyncio.create_task(do_request(session, i, img_idx))
+            tasks.append(task)
+            if interval > 0:
+                await asyncio.sleep(interval)
 
-    return results
+        results = await asyncio.gather(*tasks)
+
+    return list(results)
 
 
 # ======================== 结果分析 ========================
@@ -241,10 +323,25 @@ def analyze(results: list[dict], policy: str, config: dict) -> dict:
         return {"policy": policy, "successful": 0, "failed": len(fail),
                 "error": "无成功请求"}
 
+    # 统计错误类型
+    if fail:
+        error_types: dict[str, int] = {}
+        for r in fail:
+            err = r.get("error", r.get("status", "unknown"))
+            key = str(err)[:80]
+            error_types[key] = error_types.get(key, 0) + 1
+        print(f"\n  失败请求错误分布 ({len(fail)} 个):")
+        for err_key, cnt in sorted(
+            error_types.items(), key=lambda x: -x[1]
+        )[:10]:
+            print(f"    [{cnt:>4}] {err_key}")
+
     ttfts = sorted(r["ttft"] for r in ok)
     out_toks = [r.get("output_tokens", 0) for r in ok]
 
-    total_wall = max(r["ttft"] for r in ok) if ok else 0
+    # 吞吐量: 用整体墙钟时间（从第一个到最后一个完成）
+    wall_times = [r["ttft"] for r in results]
+    total_wall = max(wall_times) if wall_times else 0
 
     summary = {
         "policy": policy,
@@ -357,8 +454,10 @@ def main():
     # 负载
     parser.add_argument("--num-prompts", type=int, default=200,
                         help="请求总数")
-    parser.add_argument("--concurrency", type=int, default=8,
-                        help="并发请求数")
+    parser.add_argument("--concurrency", type=int, default=4,
+                        help="最大并发请求数 (默认 4)")
+    parser.add_argument("--request-rate", type=float, default=2.0,
+                        help="请求速率 (req/s)，0 表示尽快发送。默认 2.0")
     parser.add_argument("--distribution", type=str, default="zipf",
                         choices=["zipf", "uniform", "bimodal"])
     parser.add_argument("--zipf-alpha", type=float, default=1.5,
@@ -392,7 +491,6 @@ def main():
         seed=args.seed,
     )
 
-    from collections import Counter
     counts = Counter(image_indices)
     print(f"\n请求分布 ({args.distribution}, alpha={args.zipf_alpha}):")
     print(f"  总请求数: {args.num_prompts}")
@@ -402,7 +500,7 @@ def main():
     print()
 
     # ---- 发送请求 ----
-    print(f"策略: {args.policy_name}, 并发: {args.concurrency}")
+    print(f"策略: {args.policy_name}")
     results = asyncio.run(
         run_workload(
             model=args.model,
@@ -410,6 +508,7 @@ def main():
             image_dir=args.image_dir,
             image_indices=image_indices,
             concurrency=args.concurrency,
+            request_rate=args.request_rate,
         )
     )
 
@@ -421,6 +520,7 @@ def main():
         "distribution": args.distribution,
         "zipf_alpha": args.zipf_alpha,
         "concurrency": args.concurrency,
+        "request_rate": args.request_rate,
         "seed": args.seed,
     }
     summary = analyze(results, args.policy_name, config)

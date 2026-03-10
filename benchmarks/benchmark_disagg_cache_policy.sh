@@ -42,7 +42,8 @@ TIMEOUT_SECONDS="${TIMEOUT_SECONDS:-600}"
 NUM_IMAGES="${NUM_IMAGES:-30}"
 NUM_PROMPTS="${NUM_PROMPTS:-200}"
 ZIPF_ALPHA="${ZIPF_ALPHA:-1.5}"
-CONCURRENCY="${CONCURRENCY:-8}"
+CONCURRENCY="${CONCURRENCY:-4}"
+REQUEST_RATE="${REQUEST_RATE:-2.0}"
 SEED="${SEED:-42}"
 
 export UCX_TLS=all
@@ -234,6 +235,7 @@ for POLICY in lru online_dual; do
         --num-prompts "$NUM_PROMPTS" \
         --zipf-alpha "$ZIPF_ALPHA" \
         --concurrency "$CONCURRENCY" \
+        --request-rate "$REQUEST_RATE" \
         --seed "$SEED" \
         --policy-name "$POLICY" \
         --output-json "$RESULT_FILE"
