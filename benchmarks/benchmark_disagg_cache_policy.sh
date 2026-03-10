@@ -46,6 +46,11 @@ CONCURRENCY="${CONCURRENCY:-4}"
 REQUEST_RATE="${REQUEST_RATE:-2.0}"
 SEED="${SEED:-42}"
 
+# Encoder cache size override (tokens). 0 = use vLLM default.
+# Set this smaller than the total encoder output to create cache pressure.
+# Example: 30 images × ~1000 tokens each ≈ 30000; use 5000-10000 for pressure.
+ENCODER_CACHE_SIZE="${ENCODER_CACHE_SIZE:-5000}"
+
 export UCX_TLS=all
 export UCX_NET_DEVICES=all
 
@@ -101,8 +106,9 @@ start_disagg_cluster() {
     PIDS=()
 
     # ---- Encoder Worker ----
-    echo "[INFO] 启动 Encoder (GPU=$GPU_E, policy=$policy)..."
+    echo "[INFO] 启动 Encoder (GPU=$GPU_E, policy=$policy, cache_size=$ENCODER_CACHE_SIZE)..."
     VLLM_CACHE_POLICY="$policy" \
+    VLLM_ENCODER_CACHE_SIZE="$ENCODER_CACHE_SIZE" \
     CUDA_VISIBLE_DEVICES="$GPU_E" vllm serve "$MODEL" \
         --gpu-memory-utilization 0.01 \
         --port "$ENCODE_PORT" \

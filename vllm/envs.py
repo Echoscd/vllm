@@ -243,6 +243,7 @@ if TYPE_CHECKING:
     VLLM_CACHE_SOFT_BUDGET_RATIO: float = 0.9
     VLLM_CACHE_ETA: float = 0.001
     VLLM_CACHE_DEFAULT_COMPUTE_COST: float = 0.05
+    VLLM_ENCODER_CACHE_SIZE: int = 0
 
 
 def get_default_cache_root():
@@ -1583,6 +1584,10 @@ environment_variables: dict[str, Callable[[], Any]] = {
     # Default encoder compute cost (seconds) for online_dual cache policy
     "VLLM_CACHE_DEFAULT_COMPUTE_COST": lambda: float(
         os.getenv("VLLM_CACHE_DEFAULT_COMPUTE_COST", "0.05")
+    ),
+    # Override encoder cache size (in tokens) for benchmarking; 0 = use default
+    "VLLM_ENCODER_CACHE_SIZE": lambda: int(
+        os.getenv("VLLM_ENCODER_CACHE_SIZE", "0")
     ),
 }
 

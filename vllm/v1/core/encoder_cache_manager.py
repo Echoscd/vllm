@@ -704,4 +704,23 @@ def compute_mm_encoder_budget(
         scheduler_config.encoder_cache_size, max_tokens_per_mm_item
     )
 
+    # Allow overriding cache size via env var for benchmarking
+    override = envs.VLLM_ENCODER_CACHE_SIZE
+    if override > 0:
+        if override < max_tokens_per_mm_item:
+            logger.warning(
+                "VLLM_ENCODER_CACHE_SIZE=%d is smaller than "
+                "max_tokens_per_mm_item=%d. Clamping to %d.",
+                override,
+                max_tokens_per_mm_item,
+                max_tokens_per_mm_item,
+            )
+            override = max_tokens_per_mm_item
+        logger.info(
+            "Overriding encoder_cache_size: %d -> %d (via VLLM_ENCODER_CACHE_SIZE)",
+            encoder_cache_size,
+            override,
+        )
+        encoder_cache_size = override
+
     return encoder_compute_budget, encoder_cache_size
