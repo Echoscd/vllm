@@ -1,13 +1,13 @@
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
 
-import os
 import time
 from collections import OrderedDict
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
+from vllm import envs
 from vllm.logger import init_logger
 from vllm.multimodal import MultiModalRegistry
 from vllm.v1.request import Request
@@ -585,16 +585,12 @@ def create_encoder_cache_manager(
         An encoder cache manager instance.
     """
     if policy is None:
-        policy = os.environ.get("VLLM_CACHE_POLICY", "lru").lower()
+        policy = envs.VLLM_CACHE_POLICY.lower()
 
     if policy == "online_dual":
-        soft_ratio = float(
-            os.environ.get("VLLM_CACHE_SOFT_BUDGET_RATIO", "0.9")
-        )
-        eta = float(os.environ.get("VLLM_CACHE_ETA", "0.001"))
-        default_cost = float(
-            os.environ.get("VLLM_CACHE_DEFAULT_COMPUTE_COST", "0.05")
-        )
+        soft_ratio = envs.VLLM_CACHE_SOFT_BUDGET_RATIO
+        eta = envs.VLLM_CACHE_ETA
+        default_cost = envs.VLLM_CACHE_DEFAULT_COMPUTE_COST
         logger.info(
             "Using OnlineDual encoder cache policy "
             "(soft_budget_ratio=%.2f, eta=%.4f, default_cost=%.4f)",

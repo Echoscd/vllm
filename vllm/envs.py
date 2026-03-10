@@ -239,6 +239,10 @@ if TYPE_CHECKING:
     VLLM_SHARED_EXPERTS_STREAM_TOKEN_THRESHOLD: int = 256
     VLLM_COMPILE_CACHE_SAVE_FORMAT: Literal["binary", "unpacked"] = "binary"
     VLLM_USE_V2_MODEL_RUNNER: bool = False
+    VLLM_CACHE_POLICY: str = "lru"
+    VLLM_CACHE_SOFT_BUDGET_RATIO: float = 0.9
+    VLLM_CACHE_ETA: float = 0.001
+    VLLM_CACHE_DEFAULT_COMPUTE_COST: float = 0.05
 
 
 def get_default_cache_root():
@@ -1565,6 +1569,20 @@ environment_variables: dict[str, Callable[[], Any]] = {
     # Flag to enable v2 model runner.
     "VLLM_USE_V2_MODEL_RUNNER": lambda: bool(
         int(os.getenv("VLLM_USE_V2_MODEL_RUNNER", "0"))
+    ),
+    # Encoder cache replacement policy: "lru" (default) or "online_dual"
+    "VLLM_CACHE_POLICY": lambda: os.getenv("VLLM_CACHE_POLICY", "lru"),
+    # Soft budget ratio for online_dual cache policy (fraction of cache_size)
+    "VLLM_CACHE_SOFT_BUDGET_RATIO": lambda: float(
+        os.getenv("VLLM_CACHE_SOFT_BUDGET_RATIO", "0.9")
+    ),
+    # Learning rate for online_dual cache policy lambda update
+    "VLLM_CACHE_ETA": lambda: float(
+        os.getenv("VLLM_CACHE_ETA", "0.001")
+    ),
+    # Default encoder compute cost (seconds) for online_dual cache policy
+    "VLLM_CACHE_DEFAULT_COMPUTE_COST": lambda: float(
+        os.getenv("VLLM_CACHE_DEFAULT_COMPUTE_COST", "0.05")
     ),
 }
 
