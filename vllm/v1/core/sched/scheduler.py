@@ -45,6 +45,7 @@ from vllm.v1.core.sched.utils import check_stop, remove_all
 from vllm.v1.engine import EngineCoreEventType, EngineCoreOutput, EngineCoreOutputs
 from vllm.v1.kv_cache_interface import KVCacheConfig
 from vllm.v1.metrics.stats import (
+    EncoderCacheStats,
     PrefixCacheStats,
     SchedulerStats,
 )
@@ -181,6 +182,7 @@ class Scheduler(SchedulerInterface):
         self.encoder_cache_manager = create_encoder_cache_manager(
             cache_size=encoder_cache_size
         )
+        self.encoder_cache_stats = EncoderCacheStats()
 
         speculative_config = vllm_config.speculative_config
         self.use_eagle = False
@@ -949,9 +951,11 @@ class Scheduler(SchedulerInterface):
                     # current step.
                     continue
 
+                self.encoder_cache_stats.queries += 1
                 if self.encoder_cache_manager.check_and_update_cache(request, i):
                     # The encoder input is already computed and cached from a
                     # previous step.
+                    self.encoder_cache_stats.hits += 1
                     continue
 
             # If no encoder input chunking is allowed, we do not want to
@@ -1444,12 +1448,15 @@ class Scheduler(SchedulerInterface):
         connector_stats_payload = (
             kv_connector_stats.data if kv_connector_stats else None
         )
+        encoder_cache_stats = self.encoder_cache_stats
+        self.encoder_cache_stats = EncoderCacheStats()
         return SchedulerStats(
             num_running_reqs=len(self.running),
             num_waiting_reqs=len(self.waiting),
             kv_cache_usage=self.kv_cache_manager.usage,
             prefix_cache_stats=prefix_cache_stats,
             connector_prefix_cache_stats=connector_prefix_cache_stats,
+            encoder_cache_stats=encoder_cache_stats,
             kv_cache_eviction_events=eviction_events,
             spec_decoding_stats=spec_stats,
             kv_connector_stats=connector_stats_payload,

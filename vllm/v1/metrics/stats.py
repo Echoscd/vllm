@@ -152,6 +152,15 @@ class MultiModalCacheStats(BaseCacheStats):
 
 
 @dataclass
+class EncoderCacheStats(BaseCacheStats):
+    """
+    Stores encoder cache hit statistics.
+    - `queries`: Number of encoder inputs checked against the cache.
+    - `hits`: Number of encoder inputs that were already cached.
+    """
+
+
+@dataclass
 class KVCacheEvictionEvent:
     """Single KV cache block eviction sample."""
 
@@ -175,6 +184,8 @@ class SchedulerStats:
 
     prefix_cache_stats: PrefixCacheStats = field(default_factory=PrefixCacheStats)
     connector_prefix_cache_stats: PrefixCacheStats | None = None
+    encoder_cache_stats: EncoderCacheStats = field(
+        default_factory=EncoderCacheStats)
 
     kv_cache_eviction_events: list[KVCacheEvictionEvent] = field(default_factory=list)
 
