@@ -173,6 +173,9 @@ class ModelRunnerOutput:
     # information related to cudagraph execution
     cudagraph_stats: CUDAGraphStat | None = None
 
+    # mm_hash -> encoder compute time in seconds (for cache cost tracking)
+    encoder_compute_times: dict[str, float] | None = None
+
 
 # ModelRunnerOutput wrapper for async scheduling.
 class AsyncModelRunnerOutput(ABC):

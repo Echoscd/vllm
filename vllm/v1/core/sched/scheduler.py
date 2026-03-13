@@ -1044,6 +1044,16 @@ class Scheduler(SchedulerInterface):
         kv_connector_output = model_runner_output.kv_connector_output
         cudagraph_stats = model_runner_output.cudagraph_stats
 
+        # Feed measured encoder compute times back to the cache manager
+        # so that OnlineDual can use real c_i values for eviction decisions.
+        if model_runner_output.encoder_compute_times:
+            if hasattr(self.encoder_cache_manager, 'record_compute_cost'):
+                for mm_hash, cost in (
+                    model_runner_output.encoder_compute_times.items()
+                ):
+                    self.encoder_cache_manager.record_compute_cost(
+                        mm_hash, cost)
+
         outputs: dict[int, list[EngineCoreOutput]] = defaultdict(list)
         spec_decoding_stats: SpecDecodingStats | None = None
         kv_connector_stats: KVConnectorStats | None = (

@@ -3235,6 +3235,12 @@ class GPUModelRunner(
 
         with record_function_or_nullcontext("gpu_model_runner: eplb"):
             self.eplb_step()
+        # Drain per-step encoder compute times for scheduler feedback
+        encoder_compute_times: dict[str, float] | None = None
+        if self._encoder_compute_times:
+            encoder_compute_times = self._encoder_compute_times.copy()
+            self._encoder_compute_times.clear()
+
         with record_function_or_nullcontext("gpu_model_runner: ModelRunnerOutput"):
             output = ModelRunnerOutput(
                 req_ids=req_ids_output_copy,
@@ -3249,6 +3255,7 @@ class GPUModelRunner(
                 else None,
                 num_nans_in_logits=num_nans_in_logits,
                 cudagraph_stats=cudagraph_stats,
+                encoder_compute_times=encoder_compute_times,
             )
 
         if not self.use_async_scheduling:
