@@ -68,77 +68,14 @@ declare -a PIDS=()
 wait_for_server() {
     local port=$1
     local name=${2:-"server"}
-    echo "[INFO] 等待 ${name} 启动 (port=$port)..."
+    local endpoint=${3:-"/v1/models"}
+    echo "[INFO] 等待 ${name} 就绪 (port=$port, endpoint=$endpoint)..."
     timeout "$TIMEOUT_SECONDS" bash -c "
-        until curl -s localhost:$port/health > /dev/null 2>&1; do
-            sleep 2
-        done" && echo "[OK] ${name} health 端点已响应" || {
+        until curl -s -o /dev/null -w '%{http_code}' localhost:$port$endpoint 2>/dev/null | grep -q 200; do
+            sleep 3
+        done" && echo "[OK] ${name} 已就绪" || {
         echo "[ERROR] ${name} 启动超时"; return 1;
     }
-}
-
-# 等待 vLLM worker 模型加载完毕（/v1/models 只有模型加载后才返回模型列表）
-wait_for_model_ready() {
-    local port=$1
-    local name=${2:-"server"}
-    echo "[INFO] 等待 ${name} 模型加载完毕 (port=$port)..."
-    timeout "$TIMEOUT_SECONDS" bash -c '
-        while true; do
-            resp=$(curl -s localhost:'"$port"'/v1/models 2>/dev/null)
-            if echo "$resp" | python3 -c "
-import sys, json
-try:
-    d = json.load(sys.stdin)
-    sys.exit(0 if d.get(\"data\") else 1)
-except:
-    sys.exit(1)
-" 2>/dev/null; then
-                break
-            fi
-            sleep 3
-        done' && echo "[OK] ${name} 模型已就绪" || {
-        echo "[ERROR] ${name} 模型加载超时"; return 1;
-    }
-}
-
-# 通过 Proxy 发送一个真实的 warmup 请求，确保整条链路通畅
-warmup_request() {
-    local image_dir=$1
-    # 取第一张图片
-    local first_image
-    first_image=$(ls "$image_dir"/*.jpg 2>/dev/null | head -1)
-    if [ -z "$first_image" ]; then
-        echo "[WARN] 没找到 warmup 图片，跳过 warmup"
-        return 0
-    fi
-
-    echo "[INFO] 发送 warmup 请求 (确保整条链路就绪)..."
-    local max_retries=5
-    local retry=0
-    while [ $retry -lt $max_retries ]; do
-        local http_code
-        http_code=$(curl -s -o /dev/null -w "%{http_code}" \
-            --max-time 120 \
-            "http://localhost:${PROXY_PORT}/v1/chat/completions" \
-            -H "Content-Type: application/json" \
-            -d '{
-                "model": "'"$MODEL"'",
-                "messages": [{"role": "user", "content": [
-                    {"type": "image_url", "image_url": {"url": "file://'"$first_image"'"}},
-                    {"type": "text", "text": "Hi"}
-                ]}],
-                "max_tokens": 5
-            }' 2>/dev/null)
-
-        if [ "$http_code" = "200" ]; then
-            echo "[OK] Warmup 成功"
-            return 0
-        fi
-        retry=$((retry + 1))
-        echo "[WARN] Warmup 返回 HTTP $http_code, 重试 $retry/$max_retries ..."
-        sleep $((retry * 3))
-    done
-    echo "[WARN] Warmup 请求未成功 (HTTP $http_code)，继续执行测试"
 }
 
 cleanup() {
@@ -236,18 +173,10 @@ start_disagg_cluster() {
         >"${log_prefix}_decode.log" 2>&1 &
     PIDS+=($!)
 
-    # 等待所有 worker health 端点就绪
+    # 等待所有 worker 模型加载完毕（/v1/models 仅在模型就绪后返回 200）
     wait_for_server $ENCODE_PORT "Encoder"
     wait_for_server $PREFILL_PORT "Prefill"
     wait_for_server $DECODE_PORT "Decode"
-
-    # 等待模型真正加载完毕
-    wait_for_model_ready $ENCODE_PORT "Encoder"
-    wait_for_model_ready $PREFILL_PORT "Prefill"
-    wait_for_model_ready $DECODE_PORT "Decode"
-
-    echo "[INFO] 所有 worker 模型加载完毕，等待 5 秒让服务稳定..."
-    sleep 5
 
     # ---- Proxy ----
     echo "[INFO] 启动 Proxy..."
@@ -260,10 +189,7 @@ start_disagg_cluster() {
         >"${log_prefix}_proxy.log" 2>&1 &
     PIDS+=($!)
 
-    wait_for_server $PROXY_PORT "Proxy"
-
-    # 发送 warmup 请求确保整条链路通畅
-    warmup_request "$IMAGE_DIR"
+    wait_for_server $PROXY_PORT "Proxy" "/health"
 
     echo "[OK] 所有服务已启动并验证就绪 (policy=$policy)"
 }
