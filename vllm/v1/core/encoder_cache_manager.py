@@ -62,6 +62,8 @@ class EncoderCacheManager:
             last call to get_freed_mm_hashes(). This list is cleared on return.
     """
 
+    _LOG_INTERVAL = 100  # print hit rate every N queries
+
     def __init__(self, cache_size: int):
         self.cache_size = cache_size
         self.num_free_slots = cache_size
@@ -73,6 +75,10 @@ class EncoderCacheManager:
         # mm_hash of mm_data => num_encoder_tokens of the mm_data
         self.freeable: OrderedDict[str, int] = OrderedDict()
         self.freed: list[str] = []
+
+        # Debug hit-rate counters
+        self._queries = 0
+        self._hits = 0
 
     def check_and_update_cache(self, request: Request, input_id: int) -> bool:
         """Check if encoder output for a specific multimodal input is cached.
@@ -90,9 +96,13 @@ class EncoderCacheManager:
             True if the encoder output for this input is already cached
         """
         mm_hash = request.mm_features[input_id].identifier
+        self._queries += 1
         # Not cached at all
         if mm_hash not in self.cached:
+            self._maybe_log_hit_rate()
             return False
+
+        self._hits += 1
 
         # Cached but currently not referenced by any request
         if not self.cached[mm_hash]:
@@ -100,7 +110,17 @@ class EncoderCacheManager:
             self.num_freeable_slots -= num_tokens
 
         self.cached[mm_hash].add(request.request_id)
+        self._maybe_log_hit_rate()
         return True
+
+    def _maybe_log_hit_rate(self) -> None:
+        if self._queries > 0 and self._queries % self._LOG_INTERVAL == 0:
+            rate = self._hits / self._queries * 100
+            logger.info(
+                "[LRU] Encoder cache hit rate: %.1f%% "
+                "(%d/%d queries)",
+                rate, self._hits, self._queries,
+            )
 
     def can_allocate(
         self,
@@ -308,6 +328,11 @@ class OnlineDualEncoderCacheManager:
         self.freeable: OrderedDict[str, int] = OrderedDict()
         self.freed: list[str] = []
 
+        # Debug hit-rate counters
+        self._total_queries = 0
+        self._total_hits = 0
+        self._LOG_INTERVAL = 100
+
         # Online dual-variable state
         self._lambda: float = 0.0  # dual variable (price of memory)
         self._eta: float = initial_eta  # learning rate
@@ -426,15 +451,18 @@ class OnlineDualEncoderCacheManager:
         for all cached items. On cache hit, increments hit count.
         """
         mm_hash = request.mm_features[input_id].identifier
+        self._total_queries += 1
         if mm_hash not in self.cached:
             # Step even on miss to keep lambda updated
             self._step_and_update()
+            self._maybe_log_hit_rate()
             return False
 
         # Step and update dual state on every request
         self._step_and_update()
 
         # Record hit
+        self._total_hits += 1
         self._hit_counts[mm_hash] = self._hit_counts.get(mm_hash, 0) + 1
 
         # Cached but currently not referenced by any request
@@ -446,7 +474,20 @@ class OnlineDualEncoderCacheManager:
                 self._item_state[mm_hash].evictable = False
 
         self.cached[mm_hash].add(request.request_id)
+        self._maybe_log_hit_rate()
         return True
+
+    def _maybe_log_hit_rate(self) -> None:
+        if (self._total_queries > 0
+                and self._total_queries % self._LOG_INTERVAL == 0):
+            rate = self._total_hits / self._total_queries * 100
+            used = self.cache_size - self.num_free_slots
+            logger.info(
+                "[OnlineDual] Encoder cache hit rate: %.1f%% "
+                "(%d/%d queries, lambda=%.4f, used=%d/%d tokens)",
+                rate, self._total_hits, self._total_queries,
+                self._lambda, used, self.cache_size,
+            )
 
     def can_allocate(
         self,
