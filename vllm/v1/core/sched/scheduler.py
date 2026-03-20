@@ -1047,12 +1047,16 @@ class Scheduler(SchedulerInterface):
         # Feed measured encoder compute times back to the cache manager
         # so that OnlineDual can use real c_i values for eviction decisions.
         if model_runner_output.encoder_compute_times:
+            print(f"[DEBUG scheduler] received encoder_compute_times: "
+                  f"{model_runner_output.encoder_compute_times}")
             if hasattr(self.encoder_cache_manager, 'record_compute_cost'):
                 for mm_hash, cost in (
                     model_runner_output.encoder_compute_times.items()
                 ):
                     self.encoder_cache_manager.record_compute_cost(
                         mm_hash, cost)
+        else:
+            print("[DEBUG scheduler] encoder_compute_times is None or empty")
 
         outputs: dict[int, list[EngineCoreOutput]] = defaultdict(list)
         spec_decoding_stats: SpecDecodingStats | None = None

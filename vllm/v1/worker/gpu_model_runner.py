@@ -2179,6 +2179,9 @@ class GPUModelRunner(
             avg_time = self._last_encoder_batch_time / len(encoder_outputs)
             for (mm_hash, _), _ in zip(mm_hashes_pos, encoder_outputs):
                 self._encoder_compute_times[mm_hash] = avg_time
+            print(f"[DEBUG encoder timing] batch_time={self._last_encoder_batch_time:.4f}s, "
+                  f"num_items={len(encoder_outputs)}, avg_time={avg_time:.4f}s, "
+                  f"hashes={list(self._encoder_compute_times.keys())}")
 
         return encoder_outputs
 
@@ -3239,6 +3242,9 @@ class GPUModelRunner(
         if self._encoder_compute_times:
             encoder_compute_times = self._encoder_compute_times.copy()
             self._encoder_compute_times.clear()
+            print(f"[DEBUG drain] encoder_compute_times={encoder_compute_times}")
+        else:
+            print("[DEBUG drain] _encoder_compute_times is empty, nothing to drain")
 
         with record_function_or_nullcontext("gpu_model_runner: ModelRunnerOutput"):
             output = ModelRunnerOutput(
