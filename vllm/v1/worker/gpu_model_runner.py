@@ -2175,9 +2175,8 @@ class GPUModelRunner(
             self.maybe_save_ec_to_connector(self.encoder_cache, mm_hash)
 
         # Record per-item compute cost estimate (total time / num items)
-        if encoder_outputs and hasattr(self, '_encoder_compute_times'):
-            num_items = len(encoder_outputs)
-            avg_time = self._last_encoder_batch_time / max(num_items, 1)
+        if encoder_outputs:
+            avg_time = self._last_encoder_batch_time / len(encoder_outputs)
             for (mm_hash, _), _ in zip(mm_hashes_pos, encoder_outputs):
                 self._encoder_compute_times[mm_hash] = avg_time
 
